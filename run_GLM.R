@@ -148,74 +148,74 @@ contrast_vec <- array(c(-1, 1), 141)
 # where yi is the observed fMRI signal at time i, fi is the drift, and ni is the noise
 
 # Perform GLM analysis
-glm_voxelwise <- function(Y, design_mat, contrast_vec) {
-  # # Step 1: Load the design matrix and contrast vector
-  # X <- as.matrix(read.table(design_mat))
-  # contrast_vector <- as.numeric(scan(contrast_vec, what = double()))
-  # 
-  # # Step 2: Load images into a 4D array
-  # # Read all images and stack them into a 4D array
-  # image_list <- lapply(image_files, readNIfTI)
-  # Y <- array(unlist(image_list), dim = c(dim(image_list[[1]]), length(image_list)))
-  
-  # Step 1: Convert design_matrix (list) to matrix and validate inputs
+glm_voxelwise <- function(Y, design_matrix, contrast_vec, lambda = 1e4, block_size = 10) {
+  # Step 1: Convert design_matrix (list) to matrix
   X <- do.call(cbind, design_matrix)  # Combine list elements into a matrix
-  contrast_vector <- as.numeric(contrast_vec)  # Ensure contrast_vec is numeric
+  contrast_vector <- as.numeric(contrast_vec)
   
   # Validate dimensions
   if (length(contrast_vector) != ncol(X)) {
     stop("Contrast vector length must match the number of columns in the design matrix")
   }
   
-  # Step 3: Dimensions of input data
+  # Dimensions of input data
   x_dim <- dim(Y)[1]
   y_dim <- dim(Y)[2]
   z_dim <- dim(Y)[3]
   n <- dim(Y)[4]
-  k <- ncol(X) # number of columns in X (number of factors)
-  lambda <- 1e4
+  k <- ncol(X)
   
-  # Step 4: Create an empty 4D array for β coefficient images
+  # Precompute the regularized pseudo-inverse of X
+  XtX <- t(X) %*% X
+  XtX_inv <- tryCatch({
+    solve(XtX)  # Standard GLM
+  }, error = function(e) {
+    solve(XtX + lambda * diag(k))  # Ridge regression
+  })
+  XtX_inv_Xt <- XtX_inv %*% t(X)
+  
+  # Initialize arrays for results
   beta_images <- array(0, dim = c(x_dim, y_dim, z_dim, k))
-  
-  # Step 5: Loop over each voxel position (i, j, l)
-  for (i in 1:x_dim) {
-    for (j in 1:y_dim) {
-      for (l in 1:z_dim) {
-        
-        # Step 5a: Extract voxel values across images for current voxel position
-        voxel_values <- Y[i, j, l, ]
-        
-        # Step 5b: Solve for β coefficients at this voxel position
-        if (all(!is.na(voxel_values) & !is.nan(voxel_values))) { # Check for valid values
-          # Attempt standard GLM solution
-          beta <- tryCatch({
-            solve(t(X) %*% X) %*% t(X) %*% voxel_values  # Standard GLM
-          }, error = function(e) {
-            # If singular, apply ridge regression
-            solve(t(X) %*% X + lambda * diag(k)) %*% t(X) %*% voxel_values
-          })
-          
-          # Store each β coefficient in the created beta_images array
-          for (factor in 1:k) {
-            beta_images[i, j, l, factor] <- beta[factor]
-          }
-        }
-      }
-    }
-  }
-  
-  # Step 6: Apply the contrast vector to compute the contrast image
   contrast_image <- array(0, dim = c(x_dim, y_dim, z_dim))
-  for (factor in 1:k) {
-    contrast_image <- contrast_image + contrast_vector[factor] * beta_images[, , , factor]
+  
+  # Process data in blocks
+  for (z in seq(1, z_dim, by = block_size)) {
+    z_end <- min(z + block_size - 1, z_dim)
+    
+    # Extract the block of data
+    Y_block <- Y[, , z:z_end, ]
+    Y_block_flat <- matrix(Y_block, nrow = prod(dim(Y_block)[1:3]), ncol = n)
+    
+    # Skip empty or invalid data
+    valid_voxels <- rowSums(!is.na(Y_block_flat)) == n
+    
+    # Solve for β coefficients for valid voxels
+    beta_block <- matrix(0, nrow = prod(dim(Y_block)[1:3]), ncol = k)
+    beta_block[valid_voxels, ] <- XtX_inv_Xt %*% t(Y_block_flat[valid_voxels, ])
+    
+    # Compute contrast image for the block
+    contrast_block <- beta_block %*% contrast_vector
+    
+    # Reshape back to the original dimensions
+    beta_block_reshaped <- array(beta_block, dim = c(dim(Y_block)[1], dim(Y_block)[2], dim(Y_block)[3], k))
+    contrast_block_reshaped <- array(contrast_block, dim = c(dim(Y_block)[1], dim(Y_block)[2], dim(Y_block)[3]))
+    
+    # Store results
+    beta_images[, , z:z_end, ] <- beta_block_reshaped
+    contrast_image[, , z:z_end] <- contrast_block_reshaped
   }
   
-  # Step 7: Return the list of β coefficient images and the contrast image
+  # Return results
   list(beta_images = beta_images, contrast_image = contrast_image)
 }
 
-# Example usage:
-beta_results <- glm_voxelwise(bold2mm_brain, design_matrix, contrast_vec)
-writeNIfTI(beta_results$contrast_image, "contrast_image.nii")
 
+# Usage
+beta_results <- glm_voxelwise(bold2mm_brain, design_matrix, contrast_vec)
+writeNIfTI(as.nifti(beta_results$contrast_image), "contrast_image")
+
+# Load the NIfTI file
+nii_file <- readNIfTI("contrast_image.nii")
+
+# View orthogonal slices
+orthographic(nii_file, main = "Contrast Image")
