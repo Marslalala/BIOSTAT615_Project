@@ -1,0 +1,10 @@
+Package: glm4d
+Type: Package
+Title: Generate beta images and contrast image for fmri data
+Version: 0.1.0
+Author: GROUP 9
+Maintainer: Yang Han <zcakyh@umich.edu>
+Description: This package contains 5 functions from loading the NIfTI files to saving glm results
+License: For educational purposes
+Encoding: UTF-8
+LazyData: true
